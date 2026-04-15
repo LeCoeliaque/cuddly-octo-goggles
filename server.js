@@ -13,15 +13,11 @@ const io = new Server(server, {
 // ─── Deck Builder ────────────────────────────────────────────────────────────
 function buildDeck() {
   const cards = [];
-  // 3–8: 12 of each
   for (let n = 3; n <= 8; n++)
     for (let i = 0; i < 12; i++) cards.push({ type: 'number', value: n });
-  // -1 through -4: 5 of each
   for (let n = -1; n >= -4; n--)
     for (let i = 0; i < 5; i++) cards.push({ type: 'number', value: n });
-  // +10: 3 cards
   for (let i = 0; i < 3; i++) cards.push({ type: 'plus10', value: 10 });
-  // Wildcard: 3 cards
   for (let i = 0; i < 3; i++) cards.push({ type: 'wild', value: null });
   return shuffle(cards);
 }
@@ -35,39 +31,60 @@ function shuffle(arr) {
 }
 
 // ─── Scoring ─────────────────────────────────────────────────────────────────
+function cardVal(c) {
+  if (!c) return 0;
+  if (c.type === 'wild') return c.wildValue ?? 0;
+  return c.value;
+}
+
 function scoreGrid(grid) {
-  // grid is 3x3 array of cards (or null), wild has a .wildValue set
-  const val = (c) => {
-    if (!c) return 0;
-    if (c.type === 'wild') return c.wildValue ?? 0;
-    return c.value;
-  };
-
   let total = 0;
-
-  // Check rows
   for (let r = 0; r < 3; r++) {
     const row = [grid[r * 3], grid[r * 3 + 1], grid[r * 3 + 2]];
-    total += scoreLineOrRun(row, val);
+    total += scoreLine(row);
   }
-  // Check columns
   for (let c = 0; c < 3; c++) {
     const col = [grid[c], grid[3 + c], grid[6 + c]];
-    total += scoreLineOrRun(col, val);
+    total += scoreLine(col);
   }
-
   return total;
 }
 
-function scoreLineOrRun(line, val) {
-  const [a, b, c] = line.map(val);
-  // Three of a kind → negative of the value
+function scoreLine(line) {
+  const [a, b, c] = line.map(cardVal);
   if (a === b && b === c) return -Math.abs(a);
-  // Run (consecutive): middle card is the score, negated
   const sorted = [a, b, c].sort((x, y) => x - y);
   if (sorted[1] - sorted[0] === 1 && sorted[2] - sorted[1] === 1) return -sorted[1];
-  // Otherwise each card scores its own value
   return a + b + c;
+}
+
+// Score only flipped (visible) cards
+function scoreKnown(grid, flipped) {
+  const visible = grid.map((c, i) => flipped[i] ? c : null);
+  let total = 0;
+  for (let r = 0; r < 3; r++) {
+    const row = [visible[r * 3], visible[r * 3 + 1], visible[r * 3 + 2]];
+    // only score if all 3 in line are flipped
+    if (flipped[r*3] && flipped[r*3+1] && flipped[r*3+2]) total += scoreLine(row);
+    else row.forEach((c, i) => { if (c) total += cardVal(c); });
+  }
+  // Reset and just sum flipped cards simply for the "known" display
+  total = 0;
+  grid.forEach((c, i) => { if (flipped[i]) total += cardVal(c); });
+  return total;
+}
+
+// ─── Bounce/Cascade Logic ────────────────────────────────────────────────────
+// Check if a card value matches any face-up card on the player's board
+// Returns matching grid indices that are face-up
+function findMatches(player, cardValue) {
+  const matches = [];
+  player.grid.forEach((c, i) => {
+    if (player.flipped[i] && c && cardVal(c) === cardValue) {
+      matches.push(i);
+    }
+  });
+  return matches;
 }
 
 // ─── Room State ──────────────────────────────────────────────────────────────
@@ -76,16 +93,18 @@ const rooms = {};
 function createRoom(roomId) {
   return {
     id: roomId,
-    players: [],       // { id, name, grid:[card|null x9], flipped:[bool x9], wildPending:null }
+    players: [],
     deck: [],
     discard1: [],
     discard2: [],
-    phase: 'waiting',  // waiting | playing | finalRound | ended
+    phase: 'waiting',
     currentTurn: 0,
     finalTriggerPlayer: null,
-    drawnCard: null,   // { card, source } held by current player mid-turn
-    turnPhase: 'draw', // draw | place
-    plus10Pending: null, // list of player ids that may flip
+    drawnCard: null,       // { card, source } held mid-turn
+    turnPhase: 'draw',     // draw | place | bounce | plus10
+    plus10Pending: null,
+    bounceCard: null,      // card being held during a bounce chain
+    bounceChain: [],       // list of values that have bounced so far (for display)
   };
 }
 
@@ -100,12 +119,15 @@ function roomPublicState(room) {
     turnPhase: room.turnPhase,
     drawnCard: room.drawnCard,
     plus10Pending: room.plus10Pending,
+    bounceCard: room.bounceCard,
+    bounceChain: room.bounceChain,
     players: room.players.map(p => ({
       id: p.id,
       name: p.name,
       grid: p.grid.map((card, i) => p.flipped[i] ? card : { type: 'hidden' }),
       flipped: p.flipped,
       flippedCount: p.flipped.filter(Boolean).length,
+      knownScore: scoreKnown(p.grid, p.flipped),
     })),
   };
 }
@@ -117,11 +139,7 @@ io.on('connection', (socket) => {
   socket.on('joinRoom', ({ roomId, playerName }) => {
     if (!rooms[roomId]) rooms[roomId] = createRoom(roomId);
     const room = rooms[roomId];
-
-    if (room.phase !== 'waiting') {
-      socket.emit('error', 'Game already in progress');
-      return;
-    }
+    if (room.phase !== 'waiting') { socket.emit('error', 'Game already in progress'); return; }
     if (room.players.find(p => p.id === socket.id)) return;
 
     room.players.push({
@@ -143,23 +161,22 @@ io.on('connection', (socket) => {
     if (room.players.length < 2) { socket.emit('error', 'Need at least 2 players'); return; }
 
     room.deck = buildDeck();
-    // Deal 9 cards to each player
     for (const p of room.players) {
       p.grid = room.deck.splice(0, 9);
       p.flipped = Array(9).fill(false);
     }
-    // Seed both discard piles
     room.discard1.push(room.deck.pop());
     room.discard2.push(room.deck.pop());
     room.phase = 'playing';
     room.currentTurn = 0;
     room.turnPhase = 'draw';
+    room.bounceCard = null;
+    room.bounceChain = [];
 
     io.to(room.id).emit('roomState', roomPublicState(room));
     io.to(room.id).emit('message', 'Game started! Good luck.');
   });
 
-  // Draw from deck or discard pile
   socket.on('draw', ({ source }) => {
     const room = rooms[socket.data.roomId];
     if (!room || room.turnPhase !== 'draw') return;
@@ -183,48 +200,79 @@ io.on('connection', (socket) => {
     io.to(room.id).emit('roomState', roomPublicState(room));
   });
 
-  // Place drawn card into grid position, or discard it
-  socket.on('placeCard', ({ gridIndex, discard, wildValue }) => {
+  socket.on('placeCard', ({ gridIndex, discard, discardPile, wildValue }) => {
     const room = rooms[socket.data.roomId];
-    if (!room || room.turnPhase !== 'place') return;
+    if (!room || (room.turnPhase !== 'place' && room.turnPhase !== 'bounce')) return;
     const player = room.players[room.currentTurn];
     if (player.id !== socket.id) return;
-    if (!room.drawnCard) return;
 
-    const { card } = room.drawnCard;
+    // Which card are we placing — drawn card or bounce card
+    const activeCard = room.turnPhase === 'bounce' ? room.bounceCard : room.drawnCard?.card;
+    if (!activeCard) return;
 
     if (discard) {
-      // Discard the drawn card (only allowed if drawn from deck)
-      if (room.drawnCard.source !== 'deck') { socket.emit('error', 'Cannot discard a card taken from discard pile'); return; }
-      pushDiscard(room, card);
+      // Discard the active card — only from deck draw or bounce card
+      if (room.turnPhase === 'place' && room.drawnCard?.source !== 'deck') {
+        socket.emit('error', 'Cannot discard a card taken from discard pile'); return;
+      }
+      const pile = discardPile === 2 ? 'discard2' : 'discard1';
+      room[pile].push(activeCard);
       room.drawnCard = null;
+      room.bounceCard = null;
+      room.bounceChain = [];
       room.turnPhase = 'draw';
       advanceTurn(room);
       io.to(room.id).emit('roomState', roomPublicState(room));
       return;
     }
 
-    if (gridIndex < 0 || gridIndex > 8) return;
+    if (gridIndex === undefined || gridIndex < 0 || gridIndex > 8) return;
 
-    // Handle wild card value assignment
-    if (card.type === 'wild') {
+    if (activeCard.type === 'wild') {
       if (wildValue === undefined || wildValue === null) { socket.emit('needWildValue'); return; }
-      card.wildValue = parseInt(wildValue);
+      activeCard.wildValue = parseInt(wildValue);
     }
 
     const displaced = player.grid[gridIndex];
-    player.grid[gridIndex] = card;
+    const wasFlipped = player.flipped[gridIndex];
+
+    player.grid[gridIndex] = activeCard;
     player.flipped[gridIndex] = true;
 
-    // Discard the displaced card
-    if (displaced) pushDiscard(room, displaced);
+    // Clear drawnCard / bounceCard
     room.drawnCard = null;
+    room.bounceCard = null;
+
+    // If a face-up card was displaced, check for bounce
+    if (displaced && wasFlipped) {
+      const displacedVal = cardVal(displaced);
+      const matches = findMatches(player, displacedVal);
+      // matches = OTHER face-up cards with same value (exclude the slot we just placed)
+      const otherMatches = matches.filter(i => i !== gridIndex);
+
+      if (otherMatches.length > 0) {
+        // Bounce! Player holds the displaced card and can place it
+        room.bounceCard = displaced;
+        room.bounceChain = [...room.bounceChain, displacedVal];
+        room.turnPhase = 'bounce';
+        io.to(room.id).emit('roomState', roomPublicState(room));
+        io.to(room.id).emit('message', `🏌️ Bounce! ${player.name} matched a ${displacedVal} — place the displaced card!`);
+        return;
+      } else {
+        // No bounce — discard the displaced card
+        pushDiscard(room, displaced);
+      }
+    } else if (displaced && !wasFlipped) {
+      // Was face-down, just discard it
+      pushDiscard(room, displaced);
+    }
 
     // Check +10 trigger
-    if (card.type === 'plus10') {
+    if (activeCard.type === 'plus10') {
       const eligible = room.players.filter(p => p.flipped.filter(Boolean).length < 4).map(p => p.id);
       if (eligible.length > 0) {
         room.plus10Pending = eligible;
+        room.bounceChain = [];
         room.turnPhase = 'plus10';
         io.to(room.id).emit('roomState', roomPublicState(room));
         io.to(room.id).emit('message', `+10 played! Players with fewer than 4 flipped cards may reveal one.`);
@@ -232,20 +280,38 @@ io.on('connection', (socket) => {
       }
     }
 
+    room.bounceChain = [];
     checkEndTrigger(room, player);
     room.turnPhase = 'draw';
     advanceTurn(room);
     io.to(room.id).emit('roomState', roomPublicState(room));
   });
 
-  // Handle +10 flip
+  // Bounce: player discards their bounce card instead of placing it
+  socket.on('discardBounce', ({ discardPile }) => {
+    const room = rooms[socket.data.roomId];
+    if (!room || room.turnPhase !== 'bounce') return;
+    const player = room.players[room.currentTurn];
+    if (player.id !== socket.id) return;
+    if (!room.bounceCard) return;
+
+    const pile = discardPile === 2 ? 'discard2' : 'discard1';
+    room[pile].push(room.bounceCard);
+    room.bounceCard = null;
+    room.bounceChain = [];
+
+    checkEndTrigger(room, player);
+    room.turnPhase = 'draw';
+    advanceTurn(room);
+    io.to(room.id).emit('roomState', roomPublicState(room));
+  });
+
   socket.on('plus10Flip', ({ gridIndex }) => {
     const room = rooms[socket.data.roomId];
     if (!room || room.turnPhase !== 'plus10') return;
     if (!room.plus10Pending?.includes(socket.id)) return;
     const player = room.players.find(p => p.id === socket.id);
-    if (!player) return;
-    if (player.flipped[gridIndex]) return; // already flipped
+    if (!player || player.flipped[gridIndex]) return;
 
     player.flipped[gridIndex] = true;
     room.plus10Pending = room.plus10Pending.filter(id => id !== socket.id);
@@ -256,11 +322,9 @@ io.on('connection', (socket) => {
       checkEndTrigger(room, currentPlayer);
       advanceTurn(room);
     }
-
     io.to(room.id).emit('roomState', roomPublicState(room));
   });
 
-  // Player skips their +10 flip
   socket.on('plus10Skip', () => {
     const room = rooms[socket.data.roomId];
     if (!room || room.turnPhase !== 'plus10') return;
@@ -273,7 +337,6 @@ io.on('connection', (socket) => {
       checkEndTrigger(room, currentPlayer);
       advanceTurn(room);
     }
-
     io.to(room.id).emit('roomState', roomPublicState(room));
   });
 
@@ -296,7 +359,6 @@ io.on('connection', (socket) => {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function pushDiscard(room, card) {
-  // Alternate between piles to keep them balanced
   if (room.discard1.length <= room.discard2.length) room.discard1.push(card);
   else room.discard2.push(card);
 }
@@ -324,7 +386,6 @@ function advanceTurn(room) {
 
   if (room.phase === 'finalRound') {
     if (room.players[next].id === room.finalTriggerPlayer) {
-      // Full loop done — end game, flip everything
       for (const p of room.players) p.flipped = Array(9).fill(true);
       room.phase = 'ended';
       const scores = room.players.map(p => ({ name: p.name, score: scoreGrid(p.grid) }));
