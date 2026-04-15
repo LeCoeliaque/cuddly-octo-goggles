@@ -2,6 +2,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const { registerImpostorGame } = require('./impostor');
 
 const app = express();
 app.use(cors());
@@ -9,6 +10,11 @@ const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: '*', methods: ['GET', 'POST'] }
 });
+
+// ─── Mount Impostor game on its own namespace ─────────────────────────────────
+registerImpostorGame(io);
+
+// ─── Golf Card Game (default namespace) ──────────────────────────────────────
 
 // ─── Deck Builder ────────────────────────────────────────────────────────────
 function buildDeck() {
@@ -58,25 +64,13 @@ function scoreLine(line) {
   return a + b + c;
 }
 
-// Score only flipped (visible) cards
 function scoreKnown(grid, flipped) {
-  const visible = grid.map((c, i) => flipped[i] ? c : null);
   let total = 0;
-  for (let r = 0; r < 3; r++) {
-    const row = [visible[r * 3], visible[r * 3 + 1], visible[r * 3 + 2]];
-    // only score if all 3 in line are flipped
-    if (flipped[r*3] && flipped[r*3+1] && flipped[r*3+2]) total += scoreLine(row);
-    else row.forEach((c, i) => { if (c) total += cardVal(c); });
-  }
-  // Reset and just sum flipped cards simply for the "known" display
-  total = 0;
   grid.forEach((c, i) => { if (flipped[i]) total += cardVal(c); });
   return total;
 }
 
 // ─── Bounce/Cascade Logic ────────────────────────────────────────────────────
-// Check if a card value matches any face-up card on the player's board
-// Returns matching grid indices that are face-up
 function findMatches(player, cardValue) {
   const matches = [];
   player.grid.forEach((c, i) => {
@@ -100,11 +94,11 @@ function createRoom(roomId) {
     phase: 'waiting',
     currentTurn: 0,
     finalTriggerPlayer: null,
-    drawnCard: null,       // { card, source } held mid-turn
-    turnPhase: 'draw',     // draw | place | bounce | plus10
+    drawnCard: null,
+    turnPhase: 'draw',
     plus10Pending: null,
-    bounceCard: null,      // card being held during a bounce chain
-    bounceChain: [],       // list of values that have bounced so far (for display)
+    bounceCard: null,
+    bounceChain: [],
   };
 }
 
@@ -134,7 +128,7 @@ function roomPublicState(room) {
 
 // ─── Socket Handlers ─────────────────────────────────────────────────────────
 io.on('connection', (socket) => {
-  console.log('Connected:', socket.id);
+  console.log('[Golf] Connected:', socket.id);
 
   socket.on('joinRoom', ({ roomId, playerName }) => {
     if (!rooms[roomId]) rooms[roomId] = createRoom(roomId);
@@ -206,12 +200,10 @@ io.on('connection', (socket) => {
     const player = room.players[room.currentTurn];
     if (player.id !== socket.id) return;
 
-    // Which card are we placing — drawn card or bounce card
     const activeCard = room.turnPhase === 'bounce' ? room.bounceCard : room.drawnCard?.card;
     if (!activeCard) return;
 
     if (discard) {
-      // Discard the active card — only from deck draw or bounce card
       if (room.turnPhase === 'place' && room.drawnCard?.source !== 'deck') {
         socket.emit('error', 'Cannot discard a card taken from discard pile'); return;
       }
@@ -239,19 +231,15 @@ io.on('connection', (socket) => {
     player.grid[gridIndex] = activeCard;
     player.flipped[gridIndex] = true;
 
-    // Clear drawnCard / bounceCard
     room.drawnCard = null;
     room.bounceCard = null;
 
-    // If a face-up card was displaced, check for bounce
     if (displaced && wasFlipped) {
       const displacedVal = cardVal(displaced);
       const matches = findMatches(player, displacedVal);
-      // matches = OTHER face-up cards with same value (exclude the slot we just placed)
       const otherMatches = matches.filter(i => i !== gridIndex);
 
       if (otherMatches.length > 0) {
-        // Bounce! Player holds the displaced card and can place it
         room.bounceCard = displaced;
         room.bounceChain = [...room.bounceChain, displacedVal];
         room.turnPhase = 'bounce';
@@ -259,15 +247,12 @@ io.on('connection', (socket) => {
         io.to(room.id).emit('message', `🏌️ Bounce! ${player.name} matched a ${displacedVal} — place the displaced card!`);
         return;
       } else {
-        // No bounce — discard the displaced card
         pushDiscard(room, displaced);
       }
     } else if (displaced && !wasFlipped) {
-      // Was face-down, just discard it
       pushDiscard(room, displaced);
     }
 
-    // Check +10 trigger
     if (activeCard.type === 'plus10') {
       const eligible = room.players.filter(p => p.flipped.filter(Boolean).length < 4).map(p => p.id);
       if (eligible.length > 0) {
@@ -287,7 +272,6 @@ io.on('connection', (socket) => {
     io.to(room.id).emit('roomState', roomPublicState(room));
   });
 
-  // Bounce: player discards their bounce card instead of placing it
   socket.on('discardBounce', ({ discardPile }) => {
     const room = rooms[socket.data.roomId];
     if (!room || room.turnPhase !== 'bounce') return;
