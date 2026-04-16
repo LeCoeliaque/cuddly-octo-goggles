@@ -388,7 +388,7 @@ function advanceSetup(room) {
 }
 
 // ─── Register with namespace ───────────────────────────────────────────────────
-function registerHexlandsGame(io.of('/hexlands'));
+function registerHexlandsGame(io);
   io.on('connection', socket => {
     socket.on('joinRoom', ({ roomId, playerName }) => {
       if (!rooms[roomId]) rooms[roomId] = createRoom(roomId);
