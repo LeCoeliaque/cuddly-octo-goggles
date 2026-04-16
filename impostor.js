@@ -119,7 +119,7 @@ function tallyVotes(room) {
 }
 
 function registerImpostorGame(io) {
-  const nsp = io.of('/impostor');
+  const nsp = io;
 
   nsp.on('connection', (socket) => {
     console.log('[Impostor] Connected:', socket.id);
