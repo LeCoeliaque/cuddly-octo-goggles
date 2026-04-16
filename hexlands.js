@@ -298,29 +298,37 @@ function privateState(room, playerId) {
   return { resources: p?.resources||{}, devCards: p?.devCards||[] };
 }
 
-function broadcast(io, room) {
-  const pub = publicState(room);
+function broadcast(nsp, room) {
   room.players.forEach(p => {
-    io.to(p.id).emit('gameState', { ...pub, myPrivate: privateState(room, p.id) });
+    const socket = nsp.sockets.get(p.id);
+    if (!socket) return;
+
+    socket.emit('gameState', {
+      ...room,
+      myPrivate: {
+        resources: p.resources,
+        devCards: p.devCards
+      }
+    });
   });
 }
 
 function log(room, msg) { room.actionLog.push(msg); }
 
-function checkWin(io, room) {
+function checkWin(nsp, room) {
   for (const p of room.players) {
     const vp = calcVP(p, room) + p.devCards.filter(c=>c==='victoryPoint').length;
     if (vp >= WIN_VP) {
       room.phase = 'ended';
       log(room, `🏆 ${p.name} wins with ${vp} VP!`);
-      broadcast(io, room);
+      broadcast(nsp, room);
       return true;
     }
   }
   return false;
 }
 
-function updateSpecialCards(io, room) {
+function updateSpecialCards(nsp, room) {
   let bestLen = 4, bestPlayer = null;
   room.players.forEach(p => {
     const len = longestRoadLength(p.id, room.board);
@@ -388,8 +396,8 @@ function advanceSetup(room) {
 }
 
 // ─── Register with namespace ───────────────────────────────────────────────────
-function registerHexlandsGame(io) {
-  io.on('connection', socket => {
+function registerHexlandsGame(nsp) {
+  nsp.on('connection', socket => {
     socket.on('joinRoom', ({ roomId, playerName }) => {
       if (!rooms[roomId]) rooms[roomId] = createRoom(roomId);
       const room = rooms[roomId];
@@ -401,7 +409,7 @@ function registerHexlandsGame(io) {
       socket.join(roomId);
       socket.data.roomId = roomId;
       log(room, `${playerName} joined.`);
-      broadcast(io, room);
+      broadcast(nsp, room);
     });
 
     socket.on('startGame', () => {
@@ -415,7 +423,7 @@ function registerHexlandsGame(io) {
       room.setupForward = true;
       room.setupRound = 1;
       log(room, 'Game started! Setup phase.');
-      broadcast(io, room);
+      broadcast(nsp, room);
     });
 
     socket.on('placeSettlement', ({ vertexId }) => {
@@ -446,7 +454,7 @@ function registerHexlandsGame(io) {
         log(room, `${currentPlayer.name} built a settlement.`);
         currentPlayer.resources = deduct(currentPlayer.resources, BUILD_COSTS.settlement);
       }
-      broadcast(io, room);
+      broadcast(nsp, room);
     });
 
     socket.on('placeRoad', ({ edgeId }) => {
@@ -473,8 +481,8 @@ function registerHexlandsGame(io) {
         currentPlayer.resources = deduct(currentPlayer.resources, BUILD_COSTS.road);
         log(room, `${currentPlayer.name} built a road.`);
       }
-      updateSpecialCards(io, room);
-      broadcast(io, room);
+      updateSpecialCards(nsp, room);
+      broadcast(nsp, room);
     });
 
     socket.on('buildCity', ({ vertexId }) => {
@@ -488,7 +496,7 @@ function registerHexlandsGame(io) {
       v.building = 'city';
       player.resources = deduct(player.resources, BUILD_COSTS.city);
       log(room, `${player.name} upgraded to a city.`);
-      if (!checkWin(io, room)) broadcast(io, room);
+      if (!checkWin(nsp, room)) broadcast(nsp, room);
     });
 
     socket.on('rollDice', () => {
@@ -518,7 +526,7 @@ function registerHexlandsGame(io) {
       } else {
         distributeResources(room, roll);
       }
-      broadcast(io, room);
+      broadcast(nsp, room);
     });
 
     socket.on('moveRobber', ({ tileIndex }) => {
@@ -530,7 +538,7 @@ function registerHexlandsGame(io) {
       room.board.tiles[tileIndex].hasRobber = true;
       room.robberActive = false;
       log(room, `${player.name} moved the robber.`);
-      broadcast(io, room);
+      broadcast(nsp, room);
     });
 
     socket.on('endTurn', () => {
@@ -542,7 +550,7 @@ function registerHexlandsGame(io) {
       if (room.freeRoads > 0) { socket.emit('err','Place your free roads first'); return; }
       log(room, `${player.name} ended their turn.`);
       advanceTurn(room);
-      broadcast(io, room);
+      broadcast(nsp, room);
     });
 
     socket.on('buyDevCard', () => {
@@ -556,7 +564,7 @@ function registerHexlandsGame(io) {
       const card = room.deck.pop();
       player.devCards.push(card);
       log(room, `${player.name} bought a dev card.`);
-      if (!checkWin(io, room)) broadcast(io, room);
+      if (!checkWin(nsp, room)) broadcast(nsp, room);
     });
 
     socket.on('playDevCard', ({ cardType, data }) => {
@@ -572,7 +580,7 @@ function registerHexlandsGame(io) {
       if (cardType === 'knight') {
         player.knights++;
         room.robberActive = true;
-        updateSpecialCards(io, room);
+        updateSpecialCards(nsp, room);
         log(room, `${player.name} played Knight!`);
       } else if (cardType === 'roadBuilding') {
         room.freeRoads = 2;
@@ -595,7 +603,7 @@ function registerHexlandsGame(io) {
         room.devCardPlayed = false;
         log(room, `${player.name} revealed a VP card!`);
       }
-      if (!checkWin(io, room)) broadcast(io, room);
+      if (!checkWin(nsp, room)) broadcast(nsp, room);
     });
 
     socket.on('proposeTrade', ({ give, want, toPlayer }) => {
@@ -615,11 +623,11 @@ function registerHexlandsGame(io) {
         player.resources = deduct(player.resources, give);
         for (const [res,n] of Object.entries(want)) player.resources[res]=(player.resources[res]||0)+n;
         log(room, `${player.name} traded with the bank.`);
-        broadcast(io, room);
+        broadcast(nsp, room);
       } else {
         room.tradeOffer = { from: socket.id, give, want, toPlayer };
         log(room, `${player.name} offers a trade.`);
-        broadcast(io, room);
+        broadcast(nsp, room);
       }
     });
 
@@ -638,14 +646,14 @@ function registerHexlandsGame(io) {
       for (const [res,n] of Object.entries(offer.want)) from.resources[res]=(from.resources[res]||0)+n;
       room.tradeOffer = null;
       log(room, `Trade accepted between ${from.name} and ${to.name}.`);
-      broadcast(io, room);
+      broadcast(nsp, room);
     });
 
     socket.on('cancelTrade', () => {
       const room = rooms[socket.data.roomId];
       if (!room) return;
       room.tradeOffer = null;
-      broadcast(io, room);
+      broadcast(nsp, room);
     });
 
     socket.on('disconnect', () => {
@@ -658,7 +666,7 @@ function registerHexlandsGame(io) {
         room.players.splice(idx,1);
         if (!room.players.length) { delete rooms[roomId]; return; }
         if (room.turn >= room.players.length) room.turn=0;
-        broadcast(io, room);
+        broadcast(nsp, room);
       }
     });
   });
