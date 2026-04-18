@@ -1,6 +1,5 @@
 // ─── Golf Card Game ───────────────────────────────────────────────────────────
 
-// ─── Deck Builder ─────────────────────────────────────────────────────────────
 function buildDeck() {
   const cards = [];
   for (let n = 3; n <= 8; n++)
@@ -30,7 +29,7 @@ function cardVal(c) {
 function scoreLine(line) {
   const [a, b, c] = line.map(cardVal);
   if (a === b && b === c) return -Math.abs(a);
-  const sorted = [a, b, c].sort((x, y) => x - y);
+  const sorted = [a, b, c].slice().sort((x, y) => x - y);
   if (sorted[1] - sorted[0] === 1 && sorted[2] - sorted[1] === 1) return -sorted[1];
   return a + b + c;
 }
@@ -44,28 +43,34 @@ function scoreGrid(grid) {
   return total;
 }
 
+// Live score: score complete lines properly, sum raw values for incomplete lines
 function scoreKnown(grid, flipped) {
+  const allLines = [
+    [0,1,2],[3,4,5],[6,7,8],
+    [0,3,6],[1,4,7],[2,5,8],
+  ];
   let total = 0;
-  grid.forEach((c, i) => { if (flipped[i]) total += cardVal(c); });
+  for (const line of allLines) {
+    if (line.every(i => flipped[i])) {
+      total += scoreLine(line.map(i => grid[i]));
+    } else {
+      line.forEach(i => { if (flipped[i]) total += cardVal(grid[i]); });
+    }
+  }
   return total;
 }
 
-// ─── Bounce Logic ─────────────────────────────────────────────────────────────
-// Returns indices of face-up cards (excluding excludeIndex) that match the given value
-function findBounceTargets(player, value, excludeIndex) {
-  const matches = [];
-  player.grid.forEach((c, i) => {
-    if (i !== excludeIndex && player.flipped[i] && c && cardVal(c) === value) {
-      matches.push(i);
-    }
-  });
-  return matches;
+// ─── Bounce ───────────────────────────────────────────────────────────────────
+// Returns true if a face-up card matching `value` exists in player's grid (excluding excludeIndex)
+function hasFaceUpMatch(player, value, excludeIndex) {
+  return player.grid.some((c, i) =>
+    i !== excludeIndex && player.flipped[i] && c && cardVal(c) === value
+  );
 }
 
 // ─── Room State ───────────────────────────────────────────────────────────────
 const rooms = {};
-// Track which socket IDs have already joined (per room) to prevent double-join
-const joinedSockets = {}; // roomId -> Set of socket.ids
+const joinedSockets = {};
 
 function createRoom(id) {
   return {
@@ -82,7 +87,10 @@ function createRoom(id) {
     plus10Pending: null,
     bounceCard: null,
     bounceChain: [],
-    bounceTargets: [], // valid grid indices the bounce card can be placed on
+    bounceCanPlace: false,
+    roundNumber: 0,
+    goalScore: null,
+    lastRoundResults: null,
   };
 }
 
@@ -99,7 +107,10 @@ function roomPublicState(room) {
     plus10Pending: room.plus10Pending,
     bounceCard: room.bounceCard,
     bounceChain: room.bounceChain,
-    bounceTargets: room.bounceTargets,
+    bounceCanPlace: room.bounceCanPlace,
+    roundNumber: room.roundNumber,
+    goalScore: room.goalScore,
+    lastRoundResults: room.lastRoundResults,
     players: room.players.map(p => ({
       id: p.id,
       name: p.name,
@@ -107,6 +118,7 @@ function roomPublicState(room) {
       flipped: p.flipped,
       flippedCount: p.flipped.filter(Boolean).length,
       knownScore: scoreKnown(p.grid, p.flipped),
+      totalScore: p.totalScore || 0,
     })),
   };
 }
@@ -130,15 +142,39 @@ function checkEndTrigger(room, player) {
   }
 }
 
+function endRound(io, room) {
+  room.players.forEach(p => p.flipped.fill(true));
+  room.phase = 'ended';
+
+  const roundScores = room.players.map(p => {
+    const rs = scoreGrid(p.grid);
+    p.totalScore = (p.totalScore || 0) + rs;
+    return {
+      id: p.id,
+      name: p.name,
+      roundScore: rs,
+      totalScore: p.totalScore,
+      grid: p.grid.slice(),
+    };
+  });
+
+  const results = roundScores.slice().sort((a, b) => a.totalScore - b.totalScore);
+  room.lastRoundResults = results;
+
+  let gameOver = false;
+  if (room.goalScore !== null) {
+    gameOver = results.some(r => r.totalScore <= room.goalScore);
+  } else {
+    gameOver = true;
+  }
+
+  io.to(room.id).emit('roundOver', { results, gameOver, goalScore: room.goalScore });
+}
+
 function advanceTurn(io, room) {
   const next = (room.currentTurn + 1) % room.players.length;
   if (room.phase === 'finalRound' && room.players[next].id === room.finalTriggerPlayer) {
-    room.players.forEach(p => p.flipped.fill(true));
-    room.phase = 'ended';
-    const scores = room.players
-      .map(p => ({ name: p.name, score: scoreGrid(p.grid) }))
-      .sort((a, b) => a.score - b.score);
-    io.to(room.id).emit('gameOver', scores);
+    endRound(io, room);
     return;
   }
   room.currentTurn = next;
@@ -151,16 +187,12 @@ function registerGolfGame(io) {
     socket.on('joinRoom', ({ roomId, playerName }) => {
       if (!rooms[roomId]) rooms[roomId] = createRoom(roomId);
       if (!joinedSockets[roomId]) joinedSockets[roomId] = new Set();
-
       const room = rooms[roomId];
 
-      // Prevent double-join from same socket
       if (joinedSockets[roomId].has(socket.id)) {
-        // Already in this room, just resync state
-        io.to(roomId).emit('roomState', roomPublicState(room));
+        socket.emit('roomState', roomPublicState(room));
         return;
       }
-
       if (room.phase !== 'waiting') { socket.emit('error', 'Game already in progress'); return; }
 
       joinedSockets[roomId].add(socket.id);
@@ -169,28 +201,53 @@ function registerGolfGame(io) {
         name: playerName || `Player ${room.players.length + 1}`,
         grid: Array(9).fill(null),
         flipped: Array(9).fill(false),
+        totalScore: 0,
       });
       socket.join(roomId);
       socket.data.roomId = roomId;
       io.to(roomId).emit('roomState', roomPublicState(room));
     });
 
-    socket.on('startGame', () => {
+    socket.on('setGoal', ({ goalScore }) => {
       const room = rooms[socket.data.roomId];
-      if (!room || room.players.length < 2) return;
+      if (!room || room.phase !== 'waiting') return;
+      room.goalScore = (goalScore != null && goalScore !== '') ? parseInt(goalScore) : null;
+      io.to(room.id).emit('roomState', roomPublicState(room));
+    });
+
+    function startRound(room) {
       room.deck = buildDeck();
       for (const p of room.players) {
         p.grid = room.deck.splice(0, 9);
         p.flipped = Array(9).fill(false);
       }
+      room.discard1 = [];
+      room.discard2 = [];
       room.discard1.push(room.deck.pop());
       room.discard2.push(room.deck.pop());
       room.phase = 'playing';
       room.currentTurn = 0;
       room.turnPhase = 'draw';
+      room.finalTriggerPlayer = null;
+      room.drawnCard = null;
       room.bounceCard = null;
       room.bounceChain = [];
-      room.bounceTargets = [];
+      room.bounceCanPlace = false;
+      room.plus10Pending = null;
+      room.roundNumber = (room.roundNumber || 0) + 1;
+    }
+
+    socket.on('startGame', () => {
+      const room = rooms[socket.data.roomId];
+      if (!room || room.players.length < 2) return;
+      startRound(room);
+      io.to(room.id).emit('roomState', roomPublicState(room));
+    });
+
+    socket.on('nextRound', () => {
+      const room = rooms[socket.data.roomId];
+      if (!room || room.phase !== 'ended') return;
+      startRound(room);
       io.to(room.id).emit('roomState', roomPublicState(room));
     });
 
@@ -219,34 +276,45 @@ function registerGolfGame(io) {
       const player = room.players[room.currentTurn];
       if (player.id !== socket.id) return;
 
-      // During bounce phase, route to bounce handler
+      // ── Bounce phase ──────────────────────────────────────────────────────
       if (room.turnPhase === 'bounce') {
         if (discard) {
           const pile = discardPile === 2 ? 'discard2' : 'discard1';
           room[pile].push(room.bounceCard);
           room.bounceCard = null;
           room.bounceChain = [];
-          room.bounceTargets = [];
+          room.bounceCanPlace = false;
           room.turnPhase = 'draw';
           checkEndTrigger(room, player);
           advanceTurn(io, room);
           io.to(room.id).emit('roomState', roomPublicState(room));
           return;
         }
-        // Validate: the target slot must be in bounceTargets
-        if (!room.bounceTargets.includes(gridIndex)) {
-          socket.emit('error', 'You can only place there if a matching card is face-up in that slot.');
+        if (!room.bounceCanPlace) {
+          socket.emit('error', 'No matching face-up card — you must discard this card.');
           return;
         }
-        // Place bounce card onto the matching slot, displacing it
+
+        const bounceCard = room.bounceCard;
         const displaced = player.grid[gridIndex];
-        player.grid[gridIndex] = room.bounceCard;
-        player.flipped[gridIndex] = true; // bounce card is now face-up
-        // displaced is already face-up (it was a match), discard it
+        const wasFlipped = player.flipped[gridIndex];
+        player.grid[gridIndex] = bounceCard;
+        player.flipped[gridIndex] = true;
         room.bounceCard = null;
         room.bounceChain = [];
-        room.bounceTargets = [];
-        pushDiscard(room, displaced);
+        room.bounceCanPlace = false;
+
+        if (displaced) {
+          const val = cardVal(displaced);
+          const canPlace = hasFaceUpMatch(player, val, gridIndex);
+          room.bounceCard = displaced;
+          room.bounceCanPlace = canPlace;
+          room.turnPhase = 'bounce';
+          room.bounceChain = wasFlipped ? [val] : [`?→${val}`];
+          io.to(room.id).emit('roomState', roomPublicState(room));
+          return;
+        }
+
         checkEndTrigger(room, player);
         room.turnPhase = 'draw';
         advanceTurn(io, room);
@@ -254,6 +322,7 @@ function registerGolfGame(io) {
         return;
       }
 
+      // ── Normal place phase ────────────────────────────────────────────────
       const activeCard = room.drawnCard?.card;
       if (!activeCard) return;
 
@@ -261,9 +330,6 @@ function registerGolfGame(io) {
         const pile = discardPile === 2 ? 'discard2' : 'discard1';
         room[pile].push(activeCard);
         room.drawnCard = null;
-        room.bounceCard = null;
-        room.bounceChain = [];
-        room.bounceTargets = [];
         room.turnPhase = 'draw';
         advanceTurn(io, room);
         io.to(room.id).emit('roomState', roomPublicState(room));
@@ -282,31 +348,14 @@ function registerGolfGame(io) {
       room.drawnCard = null;
 
       if (displaced) {
-        if (!wasFlipped) {
-          // Displaced a face-down card: always enter bounce so the player sees what it was.
-          // If there are matching face-up cards they can place it there; otherwise discard-only.
-          const val = cardVal(displaced);
-          const targets = findBounceTargets(player, val, gridIndex);
-          room.bounceCard = displaced;
-          room.bounceTargets = targets; // empty = discard only
-          room.turnPhase = 'bounce';
-          room.bounceChain.push(`?→${val}`);
-          io.to(room.id).emit('roomState', roomPublicState(room));
-          return;
-        } else {
-          // Displaced a face-up card
-          const val = cardVal(displaced);
-          const targets = findBounceTargets(player, val, gridIndex);
-          if (targets.length) {
-            room.bounceCard = displaced;
-            room.bounceTargets = targets;
-            room.turnPhase = 'bounce';
-            room.bounceChain.push(val);
-            io.to(room.id).emit('roomState', roomPublicState(room));
-            return;
-          }
-          pushDiscard(room, displaced);
-        }
+        const val = cardVal(displaced);
+        const canPlace = hasFaceUpMatch(player, val, gridIndex);
+        room.bounceCard = displaced;
+        room.bounceCanPlace = canPlace;
+        room.turnPhase = 'bounce';
+        room.bounceChain = wasFlipped ? [val] : [`?→${val}`];
+        io.to(room.id).emit('roomState', roomPublicState(room));
+        return;
       }
 
       if (activeCard.type === 'plus10') {
@@ -321,8 +370,6 @@ function registerGolfGame(io) {
         }
       }
 
-      room.bounceChain = [];
-      room.bounceTargets = [];
       checkEndTrigger(room, player);
       room.turnPhase = 'draw';
       advanceTurn(io, room);
