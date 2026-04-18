@@ -241,6 +241,7 @@ function registerGolfGame(io) {
         // Place bounce card onto the matching slot, displacing it
         const displaced = player.grid[gridIndex];
         player.grid[gridIndex] = room.bounceCard;
+        player.flipped[gridIndex] = true; // bounce card is now face-up
         // displaced is already face-up (it was a match), discard it
         room.bounceCard = null;
         room.bounceChain = [];
@@ -282,21 +283,16 @@ function registerGolfGame(io) {
 
       if (displaced) {
         if (!wasFlipped) {
-          // Displaced a face-down card: reveal it and check if any face-up card matches
+          // Displaced a face-down card: always enter bounce so the player sees what it was.
+          // If there are matching face-up cards they can place it there; otherwise discard-only.
           const val = cardVal(displaced);
           const targets = findBounceTargets(player, val, gridIndex);
-          if (targets.length) {
-            // There are matching face-up cards — enter bounce mode
-            room.bounceCard = displaced;
-            room.bounceTargets = targets;
-            room.turnPhase = 'bounce';
-            room.bounceChain.push(`?→${val}`);
-            io.to(room.id).emit('roomState', roomPublicState(room));
-            return;
-          } else {
-            // No matches — just discard it normally
-            pushDiscard(room, displaced);
-          }
+          room.bounceCard = displaced;
+          room.bounceTargets = targets; // empty = discard only
+          room.turnPhase = 'bounce';
+          room.bounceChain.push(`?→${val}`);
+          io.to(room.id).emit('roomState', roomPublicState(room));
+          return;
         } else {
           // Displaced a face-up card
           const val = cardVal(displaced);
