@@ -43,25 +43,41 @@ function scoreGrid(grid) {
   return total;
 }
 
-// Live score: score complete lines properly, sum raw values for incomplete lines
+// Live score: for each complete line score it properly (with bonuses).
+// Cards in complete lines are NOT double-counted as raw values in their other dimension.
 function scoreKnown(grid, flipped) {
-  const allLines = [
-    [0,1,2],[3,4,5],[6,7,8],
-    [0,3,6],[1,4,7],[2,5,8],
-  ];
+  const rows = [[0,1,2],[3,4,5],[6,7,8]];
+  const cols = [[0,3,6],[1,4,7],[2,5,8]];
   let total = 0;
-  for (const line of allLines) {
+  const inCompleteRow = new Set();
+  const inCompleteCol = new Set();
+
+  for (const line of rows) {
     if (line.every(i => flipped[i])) {
       total += scoreLine(line.map(i => grid[i]));
-    } else {
-      line.forEach(i => { if (flipped[i]) total += cardVal(grid[i]); });
+      line.forEach(i => inCompleteRow.add(i));
+    }
+  }
+  for (const line of cols) {
+    if (line.every(i => flipped[i])) {
+      total += scoreLine(line.map(i => grid[i]));
+      line.forEach(i => inCompleteCol.add(i));
+    }
+  }
+  // Raw sum for cards not yet counted in any complete line
+  for (let i = 0; i < 9; i++) {
+    if (flipped[i] && !inCompleteRow.has(i) && !inCompleteCol.has(i)) {
+      total += cardVal(grid[i]);
     }
   }
   return total;
 }
 
 // ─── Bounce ───────────────────────────────────────────────────────────────────
-// Returns true if a face-up card matching `value` exists in player's grid (excluding excludeIndex)
+// Returns true if any face-up card matching `value` exists in player's grid.
+// excludeIndex is the slot the displaced card came FROM (don't count it as its own match).
+// But the newly placed card (at placedIndex) CAN count as a match — e.g. you placed a 6
+// and displaced a hidden 6, those match so you can place it anywhere.
 function hasFaceUpMatch(player, value, excludeIndex) {
   return player.grid.some((c, i) =>
     i !== excludeIndex && player.flipped[i] && c && cardVal(c) === value
@@ -211,7 +227,7 @@ function registerGolfGame(io) {
     socket.on('setGoal', ({ goalScore }) => {
       const room = rooms[socket.data.roomId];
       if (!room || room.phase !== 'waiting') return;
-      room.goalScore = (goalScore != null && goalScore !== '') ? parseInt(goalScore) : null;
+      const g = parseInt(goalScore); room.goalScore = (!isNaN(g)) ? Math.min(g, -1) : null;
       io.to(room.id).emit('roomState', roomPublicState(room));
     });
 
@@ -306,7 +322,9 @@ function registerGolfGame(io) {
 
         if (displaced) {
           const val = cardVal(displaced);
-          const canPlace = hasFaceUpMatch(player, val, gridIndex);
+          const canPlace = wasFlipped
+            ? hasFaceUpMatch(player, val, gridIndex)
+            : hasFaceUpMatch(player, val, -1);
           room.bounceCard = displaced;
           room.bounceCanPlace = canPlace;
           room.turnPhase = 'bounce';
@@ -349,7 +367,11 @@ function registerGolfGame(io) {
 
       if (displaced) {
         const val = cardVal(displaced);
-        const canPlace = hasFaceUpMatch(player, val, gridIndex);
+        // If displaced was face-down, the card you just placed counts as a potential match.
+        // If displaced was face-up, it already WAS a face-up card — exclude its old slot.
+        const canPlace = wasFlipped
+          ? hasFaceUpMatch(player, val, gridIndex)
+          : hasFaceUpMatch(player, val, -1);
         room.bounceCard = displaced;
         room.bounceCanPlace = canPlace;
         room.turnPhase = 'bounce';
