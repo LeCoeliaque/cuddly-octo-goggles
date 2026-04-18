@@ -51,16 +51,21 @@ function scoreKnown(grid, flipped) {
 }
 
 // ─── Bounce Logic ─────────────────────────────────────────────────────────────
-function findMatches(player, value) {
+// Returns indices of face-up cards (excluding excludeIndex) that match the given value
+function findBounceTargets(player, value, excludeIndex) {
   const matches = [];
   player.grid.forEach((c, i) => {
-    if (player.flipped[i] && c && cardVal(c) === value) matches.push(i);
+    if (i !== excludeIndex && player.flipped[i] && c && cardVal(c) === value) {
+      matches.push(i);
+    }
   });
   return matches;
 }
 
 // ─── Room State ───────────────────────────────────────────────────────────────
 const rooms = {};
+// Track which socket IDs have already joined (per room) to prevent double-join
+const joinedSockets = {}; // roomId -> Set of socket.ids
 
 function createRoom(id) {
   return {
@@ -77,6 +82,7 @@ function createRoom(id) {
     plus10Pending: null,
     bounceCard: null,
     bounceChain: [],
+    bounceTargets: [], // valid grid indices the bounce card can be placed on
   };
 }
 
@@ -93,6 +99,7 @@ function roomPublicState(room) {
     plus10Pending: room.plus10Pending,
     bounceCard: room.bounceCard,
     bounceChain: room.bounceChain,
+    bounceTargets: room.bounceTargets,
     players: room.players.map(p => ({
       id: p.id,
       name: p.name,
@@ -140,10 +147,23 @@ function advanceTurn(io, room) {
 // ─── Register with namespace ───────────────────────────────────────────────────
 function registerGolfGame(io) {
   io.on('connection', (socket) => {
+
     socket.on('joinRoom', ({ roomId, playerName }) => {
       if (!rooms[roomId]) rooms[roomId] = createRoom(roomId);
+      if (!joinedSockets[roomId]) joinedSockets[roomId] = new Set();
+
       const room = rooms[roomId];
+
+      // Prevent double-join from same socket
+      if (joinedSockets[roomId].has(socket.id)) {
+        // Already in this room, just resync state
+        io.to(roomId).emit('roomState', roomPublicState(room));
+        return;
+      }
+
       if (room.phase !== 'waiting') { socket.emit('error', 'Game already in progress'); return; }
+
+      joinedSockets[roomId].add(socket.id);
       room.players.push({
         id: socket.id,
         name: playerName || `Player ${room.players.length + 1}`,
@@ -170,6 +190,7 @@ function registerGolfGame(io) {
       room.turnPhase = 'draw';
       room.bounceCard = null;
       room.bounceChain = [];
+      room.bounceTargets = [];
       io.to(room.id).emit('roomState', roomPublicState(room));
     });
 
@@ -197,7 +218,42 @@ function registerGolfGame(io) {
       if (!room) return;
       const player = room.players[room.currentTurn];
       if (player.id !== socket.id) return;
-      const activeCard = room.turnPhase === 'bounce' ? room.bounceCard : room.drawnCard?.card;
+
+      // During bounce phase, route to bounce handler
+      if (room.turnPhase === 'bounce') {
+        if (discard) {
+          const pile = discardPile === 2 ? 'discard2' : 'discard1';
+          room[pile].push(room.bounceCard);
+          room.bounceCard = null;
+          room.bounceChain = [];
+          room.bounceTargets = [];
+          room.turnPhase = 'draw';
+          checkEndTrigger(room, player);
+          advanceTurn(io, room);
+          io.to(room.id).emit('roomState', roomPublicState(room));
+          return;
+        }
+        // Validate: the target slot must be in bounceTargets
+        if (!room.bounceTargets.includes(gridIndex)) {
+          socket.emit('error', 'You can only place there if a matching card is face-up in that slot.');
+          return;
+        }
+        // Place bounce card onto the matching slot, displacing it
+        const displaced = player.grid[gridIndex];
+        player.grid[gridIndex] = room.bounceCard;
+        // displaced is already face-up (it was a match), discard it
+        room.bounceCard = null;
+        room.bounceChain = [];
+        room.bounceTargets = [];
+        pushDiscard(room, displaced);
+        checkEndTrigger(room, player);
+        room.turnPhase = 'draw';
+        advanceTurn(io, room);
+        io.to(room.id).emit('roomState', roomPublicState(room));
+        return;
+      }
+
+      const activeCard = room.drawnCard?.card;
       if (!activeCard) return;
 
       if (discard) {
@@ -206,6 +262,7 @@ function registerGolfGame(io) {
         room.drawnCard = null;
         room.bounceCard = null;
         room.bounceChain = [];
+        room.bounceTargets = [];
         room.turnPhase = 'draw';
         advanceTurn(io, room);
         io.to(room.id).emit('roomState', roomPublicState(room));
@@ -222,26 +279,38 @@ function registerGolfGame(io) {
       player.grid[gridIndex] = activeCard;
       player.flipped[gridIndex] = true;
       room.drawnCard = null;
-      room.bounceCard = null;
 
       if (displaced) {
         if (!wasFlipped) {
-          room.bounceCard = displaced;
-          room.turnPhase = 'bounce';
-          room.bounceChain.push(`?→${cardVal(displaced)}`);
-          io.to(room.id).emit('roomState', roomPublicState(room));
-          return;
+          // Displaced a face-down card: reveal it and check if any face-up card matches
+          const val = cardVal(displaced);
+          const targets = findBounceTargets(player, val, gridIndex);
+          if (targets.length) {
+            // There are matching face-up cards — enter bounce mode
+            room.bounceCard = displaced;
+            room.bounceTargets = targets;
+            room.turnPhase = 'bounce';
+            room.bounceChain.push(`?→${val}`);
+            io.to(room.id).emit('roomState', roomPublicState(room));
+            return;
+          } else {
+            // No matches — just discard it normally
+            pushDiscard(room, displaced);
+          }
+        } else {
+          // Displaced a face-up card
+          const val = cardVal(displaced);
+          const targets = findBounceTargets(player, val, gridIndex);
+          if (targets.length) {
+            room.bounceCard = displaced;
+            room.bounceTargets = targets;
+            room.turnPhase = 'bounce';
+            room.bounceChain.push(val);
+            io.to(room.id).emit('roomState', roomPublicState(room));
+            return;
+          }
+          pushDiscard(room, displaced);
         }
-        const val = cardVal(displaced);
-        const matches = findMatches(player, val).filter(i => i !== gridIndex);
-        if (matches.length) {
-          room.bounceCard = displaced;
-          room.turnPhase = 'bounce';
-          room.bounceChain.push(val);
-          io.to(room.id).emit('roomState', roomPublicState(room));
-          return;
-        }
-        pushDiscard(room, displaced);
       }
 
       if (activeCard.type === 'plus10') {
@@ -257,6 +326,7 @@ function registerGolfGame(io) {
       }
 
       room.bounceChain = [];
+      room.bounceTargets = [];
       checkEndTrigger(room, player);
       room.turnPhase = 'draw';
       advanceTurn(io, room);
@@ -268,7 +338,11 @@ function registerGolfGame(io) {
       if (!rooms[roomId]) return;
       const room = rooms[roomId];
       room.players = room.players.filter(p => p.id !== socket.id);
-      if (!room.players.length) delete rooms[roomId];
+      if (joinedSockets[roomId]) joinedSockets[roomId].delete(socket.id);
+      if (!room.players.length) {
+        delete rooms[roomId];
+        delete joinedSockets[roomId];
+      }
     });
   });
 }
