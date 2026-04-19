@@ -346,7 +346,7 @@ function edgeEndpointKeys(eKey, vpos){
 
 // ── Socket ────────────────────────────────────────────────────────────────────
 const socket = io(SERVER_URL + '/hexlands', {
-  transports: ['websocket', 'polling'],
+  transports: ['polling'],
   reconnectionDelay: 2000,
   reconnectionDelayMax: 10000,
   reconnectionAttempts: 20,
