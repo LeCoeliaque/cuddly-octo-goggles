@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Hexlands</title>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;900&family=Crimson+Pro:wght@400;600&display=swap" rel="stylesheet"/>
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<style>
+/* ── Reset & Theme ─────────────────────────────────────────────────────────── */
+:root{
+  --bg:#0d1117; --surf:#161b22; --surf2:#21262d; --border:#30363d;
+  --gold:#e6b44a; --gold2:#f5d078; --text:#e6edf3; --muted:#8b949e;
+  --red:#e74c3c; --green:#2ecc71; --blue:#3498db;
+  --r:10px;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:'Crimson Pro',serif;min-height:100vh;
+  display:flex;flex-direction:column;align-items:center;overflow-x:hidden;}
+
+/* ── Typography ────────────────────────────────────────────────────────────── */
+h1{font-family:'Cinzel',serif;font-size:2.4rem;color:var(--gold);letter-spacing:4px;
+   margin:18px 0 4px;text-shadow:0 0 40px rgba(230,180,74,.4);}
+.sub{color:var(--muted);font-size:.72rem;letter-spacing:4px;margin-bottom:22px;}
+
+/* ── Form controls ─────────────────────────────────────────────────────────── */
+input,select{background:var(--surf2);border:1px solid var(--border);border-radius:var(--r);
+  color:var(--text);font-family:'Crimson Pro',serif;font-size:.95rem;
+  padding:10px 14px;outline:none;transition:border-color .2s;}
+input:focus,select:focus{border-color:var(--gold);}
+input::placeholder{color:var(--muted);}
+button{background:var(--gold);border:none;border-radius:var(--r);color:#0d1117;
+  cursor:pointer;font-family:'Cinzel',serif;font-size:.82rem;font-weight:700;
+  letter-spacing:.5px;padding:10px 16px;transition:background .2s,transform .1s;}
+button:hover{background:var(--gold2);transform:translateY(-1px);}
+button:active{transform:none;}
+button.sec{background:var(--surf2);color:var(--text);border:1px solid var(--border);}
+button.sec:hover{border-color:var(--gold);color:var(--gold);background:var(--surf2);}
+button:disabled{opacity:.35;cursor:not-allowed;transform:none;}
+
+/* ── Lobby ─────────────────────────────────────────────────────────────────── */
+#lobby{background:var(--surf);border:1px solid var(--border);border-radius:16px;
+  padding:28px;width:100%;max-width:420px;display:flex;flex-direction:column;gap:12px;}
+.hint{color:var(--muted);font-size:.85rem;line-height:1.6;}
+.status{color:var(--muted);font-size:.8rem;text-align:center;min-height:16px;}
+
+/* ── Game shell ────────────────────────────────────────────────────────────── */
+#game{display:none;width:100%;max-width:1320px;flex-direction:row;
+  align-items:flex-start;flex-wrap:wrap;gap:0;}
+
+/* ── Board column ──────────────────────────────────────────────────────────── */
+#board-col{flex:1;min-width:300px;display:flex;flex-direction:column;
+  align-items:center;gap:10px;padding:12px;}
+#board-wrap{width:100%;max-width:640px;aspect-ratio:1;
+  background:radial-gradient(ellipse at center,#1e3a5f 60%,#0d1a2e 100%);
+  border-radius:50%;box-shadow:0 0 60px rgba(30,58,95,.8);overflow:visible;}
+#board-svg{width:100%;height:100%;display:block;overflow:visible;}
+
+/* ── Dice ──────────────────────────────────────────────────────────────────── */
+.dice-row{display:flex;gap:10px;align-items:center;justify-content:center;flex-wrap:wrap;}
+.die{width:50px;height:50px;background:var(--surf);border:2px solid var(--border);border-radius:10px;
+  display:flex;align-items:center;justify-content:center;
+  font-family:'Cinzel',serif;font-size:1.5rem;color:var(--gold);}
+.die.rolling{animation:spin .4s ease-out;}
+@keyframes spin{0%{transform:rotate(-20deg) scale(1.3)}100%{transform:none}}
+.dice-sum{font-family:'Cinzel',serif;font-size:1.2rem;color:var(--gold2);min-width:50px;}
+
+/* ── Sidebar ───────────────────────────────────────────────────────────────── */
+#side-col{width:290px;min-width:260px;display:flex;flex-direction:column;gap:8px;padding:12px;}
+.panel{background:var(--surf);border:1px solid var(--border);border-radius:12px;padding:12px;}
+.ptitle{font-family:'Cinzel',serif;font-size:.68rem;letter-spacing:3px;
+  color:var(--muted);text-transform:uppercase;margin-bottom:10px;}
+
+/* ── Players list ──────────────────────────────────────────────────────────── */
+.prow{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);}
+.prow:last-child{border:none;}
+.pdot{width:11px;height:11px;border-radius:50%;flex-shrink:0;}
+.pname{flex:1;font-size:.9rem;}
+.pstats{font-size:.75rem;color:var(--muted);}
+.pvp{font-family:'Cinzel',serif;color:var(--gold);font-size:.85rem;}
+.prow.myturn .pname{color:var(--gold);}
+
+/* ── Resources ─────────────────────────────────────────────────────────────── */
+.rg{display:grid;grid-template-columns:repeat(5,1fr);gap:5px;}
+.rc{display:flex;flex-direction:column;align-items:center;gap:2px;
+  background:var(--surf2);border-radius:7px;padding:5px 3px;}
+.ri{font-size:1rem;}
+.rn{font-family:'Cinzel',serif;font-size:.85rem;color:var(--gold);}
+.rl{font-size:.55rem;color:var(--muted);letter-spacing:1px;text-transform:uppercase;}
+
+/* ── Dev cards ─────────────────────────────────────────────────────────────── */
+.dv{display:flex;flex-wrap:wrap;gap:5px;}
+.dc{background:var(--surf2);border:1px solid var(--border);border-radius:6px;
+  font-size:.7rem;padding:4px 8px;cursor:pointer;transition:border-color .2s,color .2s;}
+.dc:hover:not(:disabled){border-color:var(--gold);color:var(--gold);}
+.dc.vp{border-color:#9b59b6;color:#c39bd3;}
+.dc:disabled{opacity:.4;cursor:not-allowed;}
+
+/* ── Action buttons ────────────────────────────────────────────────────────── */
+.brow{display:flex;flex-wrap:wrap;gap:6px;}
+.brow button{flex:1;font-size:.74rem;padding:8px 10px;}
+
+/* ── Log ───────────────────────────────────────────────────────────────────── */
+#log-list{max-height:120px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;}
+#log-list p{font-size:.76rem;color:var(--muted);border-left:2px solid var(--border);
+  padding-left:7px;line-height:1.4;}
+
+/* ── Banner ────────────────────────────────────────────────────────────────── */
+#banner{background:var(--gold);color:#0d1117;border-radius:8px;padding:8px 14px;
+  font-family:'Cinzel',serif;font-size:.85rem;text-align:center;letter-spacing:1px;
+  width:100%;max-width:640px;}
+.ptag{display:inline-block;background:var(--surf2);border:1px solid var(--border);
+  border-radius:20px;font-size:.65rem;letter-spacing:2px;padding:3px 10px;
+  color:var(--muted);text-transform:uppercase;}
+.ptag.active{border-color:var(--gold);color:var(--gold);}
+
+/* ── Trade panel ───────────────────────────────────────────────────────────── */
+.trow{display:flex;align-items:center;gap:6px;margin-bottom:6px;}
+.trow label{font-size:.78rem;color:var(--muted);width:36px;}
+.trow input[type=number]{width:46px;padding:4px 6px;font-size:.82rem;}
+
+/* ── Modals ────────────────────────────────────────────────────────────────── */
+.mbg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:100;
+  align-items:center;justify-content:center;}
+.mbg.open{display:flex;}
+.mbox{background:var(--surf);border:1px solid var(--gold);border-radius:16px;
+  padding:26px;width:340px;max-width:90vw;display:flex;flex-direction:column;gap:11px;}
+.mbox h3{font-family:'Cinzel',serif;color:var(--gold);font-size:1.05rem;}
+.mbtns{display:flex;flex-wrap:wrap;gap:7px;}
+.mbtns button{flex:1;font-size:.78rem;padding:8px;}
+
+/* ── SVG board styles ──────────────────────────────────────────────────────── */
+.hex-forest   {fill:#2d5a1b;}
+.hex-hills    {fill:#8b3a3a;}
+.hex-pasture  {fill:#4a7c3f;}
+.hex-fields   {fill:#8b7320;}
+.hex-mountains{fill:#556070;}
+.hex-desert   {fill:#9c835e;}
+.hex-stroke   {fill:none;stroke:rgba(255,255,255,.12);stroke-width:1.5;}
+.num-bg       {fill:rgba(255,245,220,.93);}
+.num-txt      {font-family:'Cinzel',serif;font-size:11px;font-weight:700;
+  text-anchor:middle;dominant-baseline:central;}
+.num-red      {fill:#c0392b;}
+.num-blk      {fill:#1a1a2e;}
+.port-lbl     {font-size:8px;fill:#aaccee;text-anchor:middle;dominant-baseline:central;
+  font-family:'Cinzel',serif;}
+.robber-circ  {fill:#1a1a2e;stroke:#e74c3c;stroke-width:2;}
+.road         {stroke-width:5;stroke-linecap:round;}
+.building     {stroke:#fff;stroke-width:1.5;}
+/* click targets */
+.vtx-hit{fill:transparent;stroke:none;cursor:default;r:10;}
+.vtx-hit.valid{fill:rgba(100,255,100,.18);stroke:rgba(100,255,100,.7);stroke-width:1.5;cursor:pointer;}
+.vtx-hit.valid:hover{fill:rgba(100,255,100,.4);}
+.edge-hit{stroke:transparent;stroke-width:12;fill:none;cursor:default;}
+.edge-hit.valid{stroke:rgba(100,255,100,.35);cursor:pointer;}
+.edge-hit.valid:hover{stroke:rgba(100,255,100,.65);}
+.tile-hit{fill:transparent;cursor:default;}
+.tile-hit.robber-mode{cursor:pointer;}
+.tile-hit.robber-mode:hover{fill:rgba(231,76,60,.18);}
+
+/* ── Score panel ───────────────────────────────────────────────────────────── */
+.srow{display:flex;justify-content:space-between;align-items:center;
+  padding:8px 12px;background:var(--surf2);border-radius:7px;border:1px solid var(--border);margin-bottom:5px;}
+.srow.w{border-color:var(--gold);}
+
+@media(max-width:680px){#game{flex-direction:column;}#side-col{width:100%;}}
+</style>
+</head>
+<body>
+
+<h1>HEXLANDS</h1>
+<p class="sub">STRATEGY · RESOURCES · EXPANSION</p>
+
+<!-- LOBBY ─────────────────────────────────────────────────────────────────── -->
+<div id="lobby">
+  <p class="hint">Share a room code with 2–5 friends. The first player to join is the host and can start the game.</p>
+  <input id="inp-name" placeholder="Your name" maxlength="20"/>
+  <input id="inp-room" placeholder="Room code (e.g. ISLE77)" maxlength="20"/>
+  <button id="btn-join">Join Room</button>
+  <p id="lobby-msg" class="status"></p>
+  <div id="conn-status" style="font-size:.75rem;text-align:center;padding:6px 10px;border-radius:6px;background:#21262d;color:#8b949e">⏳ Connecting to server…</div>
+  <button id="btn-start" class="sec" style="display:none">▶ Start Game (host)</button>
+</div>
+
+<!-- GAME ──────────────────────────────────────────────────────────────────── -->
+<div id="game">
+
+  <!-- Board side -->
+  <div id="board-col">
+    <div id="banner">Waiting…</div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:center">
+      <span id="ptag" class="ptag">LOBBY</span>
+      <span id="setup-hint" style="color:var(--muted);font-size:.82rem"></span>
+    </div>
+
+    <div id="board-wrap">
+      <svg id="board-svg" viewBox="-340 -310 680 620" xmlns="http://www.w3.org/2000/svg">
+        <g id="g-hex"></g>
+        <g id="g-roads"></g>
+        <g id="g-bldg"></g>
+        <g id="g-tokens"></g>
+        <g id="g-robber"></g>
+        <g id="g-edge-hits"></g>
+        <g id="g-vtx-hits"></g>
+        <g id="g-tile-hits"></g>
+      </svg>
+    </div>
+
+    <div class="dice-row">
+      <div class="die" id="die1">–</div>
+      <div class="die" id="die2">–</div>
+      <div class="dice-sum" id="dsum"></div>
+    </div>
+  </div>
+
+  <!-- Sidebar -->
+  <div id="side-col">
+
+    <div class="panel">
+      <div class="ptitle">Players</div>
+      <div id="players-list"></div>
+    </div>
+
+    <div class="panel">
+      <div class="ptitle">My Resources</div>
+      <div class="rg" id="res-grid"></div>
+    </div>
+
+    <div class="panel">
+      <div class="ptitle">Dev Cards</div>
+      <div class="dv" id="dev-list"></div>
+      <p id="dev-hint" style="color:var(--muted);font-size:.76rem;margin-top:5px"></p>
+    </div>
+
+    <div class="panel">
+      <div class="ptitle">Build</div>
+      <div class="brow" id="build-btns">
+        <button id="b-settle" class="sec" disabled>🏠 Settlement</button>
+        <button id="b-road"   class="sec" disabled>🛤️ Road</button>
+        <button id="b-city"   class="sec" disabled>🏰 City</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="ptitle">Actions</div>
+      <div class="brow">
+        <button id="btn-roll"    disabled>🎲 Roll Dice</button>
+        <button id="btn-devbuy" class="sec" disabled>📜 Buy Card</button>
+        <button id="btn-trade"  class="sec" disabled>🔄 Trade</button>
+        <button id="btn-end"    class="sec" disabled>✔ End Turn</button>
+      </div>
+    </div>
+
+    <div class="panel" id="trade-panel" style="display:none">
+      <div class="ptitle">Trade</div>
+      <div id="trade-form"></div>
+    </div>
+
+    <div class="panel">
+      <div class="ptitle">Log</div>
+      <div id="log-list"></div>
+    </div>
+
+  </div>
+</div>
+
+<!-- MODALS ─────────────────────────────────────────────────────────────────── -->
+
+<!-- Robber -->
+<div class="mbg" id="m-robber">
+  <div class="mbox">
+    <h3>Move the Robber</h3>
+    <p style="color:var(--muted);font-size:.88rem">Click a tile on the board to place the robber there.</p>
+    <div class="mbtns"><button class="sec" onclick="closeModal('m-robber')">Cancel</button></div>
+  </div>
+</div>
+
+<!-- Dev card choice -->
+<div class="mbg" id="m-dev">
+  <div class="mbox">
+    <h3 id="m-dev-title">Choose</h3>
+    <div id="m-dev-body"></div>
+    <div class="mbtns" id="m-dev-btns"></div>
+  </div>
+</div>
+
+<!-- Incoming trade -->
+<div class="mbg" id="m-trade">
+  <div class="mbox">
+    <h3>Trade Offer</h3>
+    <p id="m-trade-body" style="color:var(--muted);font-size:.88rem;margin-bottom:4px"></p>
+    <div class="mbtns">
+      <button id="btn-accept">Accept</button>
+      <button class="sec" id="btn-decline">Decline</button>
+    </div>
+  </div>
+</div>
+
+<!-- Game over -->
+<div class="mbg" id="m-over">
+  <div class="mbox" style="width:380px">
+    <h3 style="text-align:center;font-size:1.3rem">Game Over!</h3>
+    <div id="m-over-scores"></div>
+    <button onclick="location.reload()">Play Again</button>
+  </div>
+</div>
+
+<!-- ── SCRIPT ──────────────────────────────────────────────────────────────── -->
+<script>
+// ── CONFIG — update SERVER_URL after deploying ──────────────────────────────
+// Auto-detect: works whether served locally or from Render
+const SERVER_URL = window.location.origin;
+
+// ── Hex geometry (must match server) ────────────────────────────────────────
+const HEX_SIZE = 56;
+const HEX_DIRS = [{q:1,r:0},{q:1,r:-1},{q:0,r:-1},{q:-1,r:0},{q:-1,r:1},{q:0,r:1}];
+
+function hexCenter(q,r){ return { x: HEX_SIZE*(Math.sqrt(3)*q + Math.sqrt(3)/2*r), y: HEX_SIZE*(3/2*r) }; }
+function cornerPos(q,r,i){ const {x,y}=hexCenter(q,r); const a=Math.PI/180*(60*i-30); return {x:x+HEX_SIZE*Math.cos(a),y:y+HEX_SIZE*Math.sin(a)}; }
+function hexPoints(q,r){ return Array.from({length:6},(_,i)=>cornerPos(q,r,i)).map(p=>`${p.x},${p.y}`).join(' '); }
+function hexKey(q,r){ return `${q},${r}`; }
+function hexNeighbors(q,r){ return HEX_DIRS.map(d=>({q:q+d.q,r:r+d.r})); }
+function vertexKey(q,r,i){ const ns=hexNeighbors(q,r); return [hexKey(q,r),hexKey(ns[i].q,ns[i].r),hexKey(ns[(i+5)%6].q,ns[(i+5)%6].r)].sort().join('|'); }
+function edgeKey(q,r,i){ const n=HEX_DIRS[i]; return [hexKey(q,r),hexKey(q+n.q,r+n.r)].sort().join('||'); }
+
+// Pre-compute vertex positions from geometry (not from server data)
+function buildVpos(tiles){
+  const vpos={};
+  tiles.forEach(tile=>{
+    for(let i=0;i<6;i++){
+      const vk=vertexKey(tile.q,tile.r,i);
+      if(!vpos[vk]) vpos[vk]=cornerPos(tile.q,tile.r,i);
+    }
+  });
+  return vpos;
+}
+
+// Edge endpoints (two vertex keys) from edge key
+function edgeEndpointKeys(eKey, vpos){
+  const [hk1,hk2]=eKey.split('||');
+  return Object.keys(vpos).filter(vk=>{
+    const parts=vk.split('|');
+    return parts.includes(hk1)&&parts.includes(hk2);
+  }).slice(0,2);
+}
+
+// ── Socket ────────────────────────────────────────────────────────────────────
+const socket = io(SERVER_URL + '/hexlands', {
+  transports: ['websocket', 'polling'],
+  reconnectionDelay: 2000,
+  reconnectionDelayMax: 10000,
+  reconnectionAttempts: 20,
+  timeout: 30000,
+});
+let myId=null, G=null, vpos={}, buildMode=null, tradeOpen=false;
+const RNAMES=['wood','brick','sheep','wheat','ore'];
+const REMOJI={wood:'🪵',brick:'🧱',sheep:'🐑',wheat:'🌾',ore:'⛏️'};
+const TCLS={forest:'hex-forest',hills:'hex-hills',pasture:'hex-pasture',fields:'hex-fields',mountains:'hex-mountains',desert:'hex-desert'};
+const DEVLABEL={knight:'⚔️ Knight',victoryPoint:'⭐ VP',roadBuilding:'🛣️ Road Bldg',yearOfPlenty:'🌟 YoP',monopoly:'💰 Monopoly'};
+
+socket.on('connect',()=>{ myId=socket.id; document.getElementById('conn-status').style.background='#1a3a1a'; document.getElementById('conn-status').style.color='#2ecc71'; document.getElementById('conn-status').textContent='✓ Connected to server'; });
+socket.on('disconnect',()=>{ document.getElementById('conn-status').style.background='#3a1a1a'; document.getElementById('conn-status').style.color='#e74c3c'; document.getElementById('conn-status').textContent='✗ Disconnected — reload to reconnect'; });
+socket.on('connect_error',(e)=>{ document.getElementById('conn-status').style.background='#3a1a1a'; document.getElementById('conn-status').style.color='#e74c3c'; document.getElementById('conn-status').textContent='⏳ Server waking up… (Render free tier takes ~30s on first visit). Retrying automatically…'; });
+socket.on('err',msg=>{ alert('⚠ '+msg); });
+
+// ── Lobby ──────────────────────────────────────────────────────────────────────
+document.getElementById('btn-join').addEventListener('click',()=>{
+  const name=document.getElementById('inp-name').value.trim();
+  const room=document.getElementById('inp-room').value.trim().toUpperCase();
+  if(!name||!room){ setLobbyMsg('Enter your name and a room code.'); return; }
+  socket.emit('join',{roomId:room,name});
+  setLobbyMsg(`Joining ${room}…`);
+});
+document.getElementById('btn-start').addEventListener('click',()=>socket.emit('start'));
+function setLobbyMsg(m){ document.getElementById('lobby-msg').textContent=m; }
+
+// ── Main state handler ────────────────────────────────────────────────────────
+socket.on('state',s=>{
+  G=s;
+  if(s.board) vpos=buildVpos(s.board.tiles);
+
+  if(s.phase==='lobby'){
+    setLobbyMsg(`Lobby: ${s.players.map(p=>p.name).join(', ')}`);
+    document.getElementById('btn-start').style.display='block';
+    return;
+  }
+
+  // Switch to game view
+  document.getElementById('lobby').style.display='none';
+  document.getElementById('game').style.display='flex';
+
+  render(s);
+});
+
+// ── Render ────────────────────────────────────────────────────────────────────
+function render(s){
+  renderBanner(s);
+  renderBoard(s);
+  renderPlayers(s);
+  renderResources(s);
+  renderDevCards(s);
+  renderActions(s);
+  renderLog(s);
+  renderTradeModal(s);
+  if(s.phase==='ended') showGameOver(s);
+}
+
+// ── Banner ────────────────────────────────────────────────────────────────────
+function renderBanner(s){
+  const me=s.players[s.turn]?.id===myId;
+  const name=s.players[s.turn]?.name||'?';
+  document.getElementById('banner').textContent = me?'✦ Your Turn':`${name}'s Turn`;
+
+  const tag=document.getElementById('ptag');
+  const isSetup=s.phase==='setup';
+  tag.textContent=isSetup?`SETUP R${s.setupRound}`:s.phase.toUpperCase();
+  tag.className='ptag'+(me?' active':'');
+
+  const hint=document.getElementById('setup-hint');
+  if(isSetup){
+    const setupMe=s.players[s.setupIndex]?.id===myId;
+    if(setupMe) hint.textContent=buildMode==='road'?'Click an edge to place your road.':'Click a vertex to place your settlement.';
+    else hint.textContent=`Waiting for ${s.players[s.setupIndex]?.name}…`;
+  } else { hint.textContent=''; }
+}
+
+// ── Board SVG ─────────────────────────────────────────────────────────────────
+function renderBoard(s){
+  const board=s.board; if(!board) return;
+  const isMyTurn = s.players[s.turn]?.id===myId;
+  const isSetup  = s.phase==='setup';
+  const setupMe  = isSetup && s.players[s.setupIndex]?.id===myId;
+
+  // Setup auto-mode
+  if(isSetup && setupMe && !buildMode) buildMode='settlement';
+
+  clear('g-hex'); clear('g-roads'); clear('g-bldg'); clear('g-tokens');
+  clear('g-robber'); clear('g-edge-hits'); clear('g-vtx-hits'); clear('g-tile-hits');
+
+  // ── Hex tiles ──
+  board.tiles.forEach((tile,ti)=>{
+    const pts=hexPoints(tile.q,tile.r);
+    const poly=se('polygon'); poly.setAttribute('points',pts); poly.setAttribute('class',TCLS[tile.terrain]||'hex-desert');
+    ap('g-hex',poly);
+    const stroke=se('polygon'); stroke.setAttribute('points',pts); stroke.setAttribute('class','hex-stroke');
+    ap('g-hex',stroke);
+
+    // Number token
+    if(tile.number){
+      const {x,y}=hexCenter(tile.q,tile.r);
+      const circ=se('circle'); circ.setAttribute('cx',x); circ.setAttribute('cy',y);
+      circ.setAttribute('r',15); circ.setAttribute('class','num-bg');
+      ap('g-tokens',circ);
+      const txt=se('text'); txt.setAttribute('x',x); txt.setAttribute('y',y);
+      txt.setAttribute('class','num-txt '+([6,8].includes(tile.number)?'num-red':'num-blk'));
+      txt.textContent=tile.number; ap('g-tokens',txt);
+      // probability dots
+      const dots=[6,8].includes(tile.number)?5:[5,9].includes(tile.number)?4:[4,10].includes(tile.number)?3:[3,11].includes(tile.number)?2:1;
+      for(let d=0;d<dots;d++){
+        const dot=se('circle');
+        dot.setAttribute('cx',x-4*(dots-1)/2+4*d); dot.setAttribute('cy',y+8);
+        dot.setAttribute('r',1.5);
+        dot.setAttribute('fill',[6,8].includes(tile.number)?'#c0392b':'#1a1a2e');
+        ap('g-tokens',dot);
+      }
+    }
+
+    // Robber
+    if(tile.robber){
+      const {x,y}=hexCenter(tile.q,tile.r);
+      const c=se('circle'); c.setAttribute('cx',x); c.setAttribute('cy',y); c.setAttribute('r',20);
+      c.setAttribute('class','robber-circ'); ap('g-robber',c);
+      const t=se('text'); t.setAttribute('x',x); t.setAttribute('y',y);
+      t.setAttribute('text-anchor','middle'); t.setAttribute('dominant-baseline','central');
+      t.setAttribute('font-size','16'); t.textContent='🏴'; ap('g-robber',t);
+    }
+
+    // Tile hit (robber placement)
+    const th=se('polygon'); th.setAttribute('points',pts);
+    th.setAttribute('class','tile-hit'+(buildMode==='robber'&&isMyTurn?' robber-mode':''));
+    if(buildMode==='robber'&&isMyTurn){
+      th.addEventListener('click',()=>{
+        socket.emit('moveRobber',{tileId:ti});
+        buildMode=null;
+        closeModal('m-robber');
+      });
+    }
+    ap('g-tile-hits',th);
+  });
+
+  // ── Roads ──
+  Object.values(board.edges).forEach(e=>{
+    if(!e.road) return;
+    const [v1k,v2k]=edgeEndpointKeys(e.key,vpos);
+    const p1=vpos[v1k],p2=vpos[v2k]; if(!p1||!p2) return;
+    const player=s.players.find(p=>p.id===e.owner);
+    const ln=se('line');
+    ln.setAttribute('x1',p1.x); ln.setAttribute('y1',p1.y);
+    ln.setAttribute('x2',p2.x); ln.setAttribute('y2',p2.y);
+    ln.setAttribute('class','road'); ln.setAttribute('stroke',player?.color||'#888');
+    ap('g-roads',ln);
+  });
+
+  // ── Buildings ──
+  Object.values(board.vertices).forEach(v=>{
+    if(!v.building) return;
+    const pos=vpos[v.key]; if(!pos) return;
+    const player=s.players.find(p=>p.id===v.owner);
+    const col=player?.color||'#fff';
+    const {x,y}=pos;
+    if(v.building==='settlement'){
+      const h=se('polygon');
+      h.setAttribute('points',`${x},${y-11} ${x+9},${y-2} ${x+9},${y+9} ${x-9},${y+9} ${x-9},${y-2}`);
+      h.setAttribute('fill',col); h.setAttribute('class','building'); ap('g-bldg',h);
+    } else if(v.building==='city'){
+      const r=se('rect');
+      r.setAttribute('x',x-10); r.setAttribute('y',y-10);
+      r.setAttribute('width',20); r.setAttribute('height',20); r.setAttribute('rx',3);
+      r.setAttribute('fill',col); r.setAttribute('class','building'); ap('g-bldg',r);
+      const t=se('text'); t.setAttribute('x',x); t.setAttribute('y',y);
+      t.setAttribute('text-anchor','middle'); t.setAttribute('dominant-baseline','central');
+      t.setAttribute('font-size','10'); t.setAttribute('fill','#fff'); t.textContent='♛';
+      ap('g-bldg',t);
+    }
+    // port label
+    if(v.port){
+      const pt=se('text'); pt.setAttribute('x',x); pt.setAttribute('y',y-20);
+      pt.setAttribute('class','port-lbl');
+      pt.textContent=v.port==='3:1'?'3:1':`${v.port.charAt(0).toUpperCase()}2:1`;
+      ap('g-bldg',pt);
+    }
+  });
+
+  // ── Edge hit targets (road mode) ──
+  const roadMode=buildMode==='road'&&(isMyTurn||setupMe);
+  if(roadMode){
+    Object.values(board.edges).forEach(e=>{
+      if(e.road) return;
+      const valid=canPlaceRoadClient(e.key,myId,board,isSetup,s.setupLastVertex);
+      const [v1k,v2k]=edgeEndpointKeys(e.key,vpos);
+      const p1=vpos[v1k],p2=vpos[v2k]; if(!p1||!p2) return;
+      const ln=se('line');
+      ln.setAttribute('x1',p1.x); ln.setAttribute('y1',p1.y);
+      ln.setAttribute('x2',p2.x); ln.setAttribute('y2',p2.y);
+      ln.setAttribute('class','edge-hit'+(valid?' valid':''));
+      if(valid) ln.addEventListener('click',()=>{ socket.emit('placeRoad',{eKey:e.key}); buildMode=null; });
+      ap('g-edge-hits',ln);
+    });
+  }
+
+  // ── Vertex hit targets ──
+  const settleMode=buildMode==='settlement'&&(isMyTurn||setupMe);
+  const cityMode  =buildMode==='city'&&isMyTurn;
+  if(settleMode||cityMode){
+    Object.values(board.vertices).forEach(v=>{
+      const pos=vpos[v.key]; if(!pos) return;
+      let valid=false;
+      if(settleMode) valid=canPlaceSettleClient(v.key,myId,board,isSetup);
+      if(cityMode)   valid=(v.building==='settlement'&&v.owner===myId);
+      const c=se('circle');
+      c.setAttribute('cx',pos.x); c.setAttribute('cy',pos.y);
+      c.setAttribute('class','vtx-hit'+(valid?' valid':''));
+      if(valid){
+        c.addEventListener('click',()=>{
+          if(buildMode==='settlement'){ socket.emit('placeSettlement',{vKey:v.key}); if(isSetup) buildMode='road'; else buildMode=null; }
+          else if(buildMode==='city'){ socket.emit('buildCity',{vKey:v.key}); buildMode=null; }
+        });
+      }
+      ap('g-vtx-hits',c);
+    });
+  }
+}
+
+// ── Client-side placement validation ─────────────────────────────────────────
+function adjacentVerts(vKey,board){
+  const res=[];
+  Object.values(board.edges).forEach(e=>{
+    const [a,b]=edgeEndpointKeys(e.key,vpos);
+    if(a===vKey&&b) res.push(b);
+    else if(b===vKey&&a) res.push(a);
+  });
+  return res;
+}
+function edgesAtVert(vKey,board){
+  return Object.values(board.edges).filter(e=>{ const [a,b]=edgeEndpointKeys(e.key,vpos); return a===vKey||b===vKey; });
+}
+function canPlaceSettleClient(vKey,pid,board,isSetup){
+  const v=board.vertices[vKey]; if(!v||v.building) return false;
+  if(adjacentVerts(vKey,board).some(k=>board.vertices[k]?.building)) return false;
+  if(isSetup) return true;
+  return edgesAtVert(vKey,board).some(e=>e.owner===pid);
+}
+function canPlaceRoadClient(eKey,pid,board,isSetup,lastVKey){
+  const e=board.edges[eKey]; if(!e||e.road) return false;
+  const [v1,v2]=edgeEndpointKeys(eKey,vpos);
+  if(!v1||!v2) return false;
+  if(isSetup&&lastVKey) return v1===lastVKey||v2===lastVKey;
+  for(const vk of [v1,v2]){
+    const v=board.vertices[vk];
+    if(v?.owner===pid) return true;
+    if(edgesAtVert(vk,board).some(e2=>e2.key!==eKey&&e2.owner===pid)&&(!v?.building||v.owner===pid)) return true;
+  }
+  return false;
+}
+
+// ── Players ───────────────────────────────────────────────────────────────────
+function renderPlayers(s){
+  const el=document.getElementById('players-list'); el.innerHTML='';
+  s.players.forEach((p,i)=>{
+    const row=document.createElement('div');
+    row.className='prow'+(i===s.turn?' myturn':'');
+    const myVP=p.id===myId?(s.mine?.devCards?.filter(c=>c==='victoryPoint').length||0):0;
+    row.innerHTML=`<div class="pdot" style="background:${p.color}"></div>
+      <div class="pname">${esc(p.name)}${p.id===myId?' <span style="font-size:.65rem;color:var(--blue)">(you)</span>':''}</div>
+      <div class="pstats">🃏${p.resourceCount} 📜${p.devCardCount} ⚔️${p.knights}</div>
+      <div class="pvp">⭐${p.vp+myVP}</div>`;
+    el.appendChild(row);
+  });
+}
+
+// ── Resources ─────────────────────────────────────────────────────────────────
+function renderResources(s){
+  if(!s.mine) return;
+  const el=document.getElementById('res-grid'); el.innerHTML='';
+  RNAMES.forEach(r=>{
+    const c=document.createElement('div'); c.className='rc';
+    c.innerHTML=`<div class="ri">${REMOJI[r]}</div><div class="rn">${s.mine.resources[r]||0}</div><div class="rl">${r}</div>`;
+    el.appendChild(c);
+  });
+}
+
+// ── Dev cards ─────────────────────────────────────────────────────────────────
+function renderDevCards(s){
+  if(!s.mine) return;
+  const el=document.getElementById('dev-list'); el.innerHTML='';
+  const isMyTurn=s.players[s.turn]?.id===myId;
+  const cnt={}; s.mine.devCards.forEach(c=>cnt[c]=(cnt[c]||0)+1);
+  Object.entries(cnt).forEach(([card,n])=>{
+    const btn=document.createElement('button');
+    btn.className='dc'+(card==='victoryPoint'?' vp':'');
+    btn.textContent=`${DEVLABEL[card]||card} ×${n}`;
+    btn.disabled=!isMyTurn||!s.diceRolled||s.devCardPlayed||card==='victoryPoint';
+    btn.addEventListener('click',()=>onPlayDev(card,s));
+    el.appendChild(btn);
+  });
+  document.getElementById('dev-hint').textContent=s.devCardPlayed?'Card already played this turn.':'';
+}
+
+// ── Actions ───────────────────────────────────────────────────────────────────
+const BCOSTS={settlement:{wood:1,brick:1,sheep:1,wheat:1},city:{wheat:2,ore:3},road:{wood:1,brick:1},devCard:{sheep:1,wheat:1,ore:1}};
+function afford(cost,s){ if(!s.mine) return false; return Object.entries(cost).every(([r,n])=>(s.mine.resources[r]||0)>=n); }
+
+function renderActions(s){
+  const isMyTurn=s.players[s.turn]?.id===myId;
+  const isSetup=s.phase==='setup';
+  const canRoll=isMyTurn&&!s.diceRolled&&!isSetup;
+  const canEnd =isMyTurn&&s.diceRolled&&!s.robberActive&&s.freeRoads===0;
+
+  document.getElementById('btn-roll').disabled=!canRoll;
+  document.getElementById('btn-devbuy').disabled=!isMyTurn||!s.diceRolled||!afford(BCOSTS.devCard,s);
+  document.getElementById('btn-trade').disabled=!isMyTurn||!s.diceRolled;
+  document.getElementById('btn-end').disabled=!canEnd;
+
+  document.getElementById('b-settle').disabled=!isMyTurn||!s.diceRolled||!afford(BCOSTS.settlement,s);
+  document.getElementById('b-road').disabled=!isMyTurn||!s.diceRolled||(!afford(BCOSTS.road,s)&&s.freeRoads===0);
+  document.getElementById('b-city').disabled=!isMyTurn||!s.diceRolled||!afford(BCOSTS.city,s);
+
+  if(s.diceResult){
+    const [d1,d2]=s.diceResult;
+    document.getElementById('die1').textContent=d1;
+    document.getElementById('die2').textContent=d2;
+    document.getElementById('dsum').textContent=`= ${d1+d2}`;
+  } else {
+    document.getElementById('die1').textContent='–';
+    document.getElementById('die2').textContent='–';
+    document.getElementById('dsum').textContent='';
+  }
+
+  if(s.robberActive&&isMyTurn){
+    buildMode='robber';
+    openModal('m-robber');
+    renderBoard(s);
+  }
+}
+
+// ── Log ───────────────────────────────────────────────────────────────────────
+function renderLog(s){
+  const el=document.getElementById('log-list'); el.innerHTML='';
+  (s.log||[]).slice(-10).forEach(m=>{ const p=document.createElement('p'); p.textContent=m; el.appendChild(p); });
+  el.scrollTop=el.scrollHeight;
+}
+
+// ── Trade ─────────────────────────────────────────────────────────────────────
+document.getElementById('btn-trade').addEventListener('click',()=>{
+  tradeOpen=!tradeOpen;
+  document.getElementById('trade-panel').style.display=tradeOpen?'block':'none';
+  if(tradeOpen) buildTradeForm();
+});
+
+function buildTradeForm(){
+  const f=document.getElementById('trade-form');
+  f.innerHTML=`
+    <p style="color:var(--muted);font-size:.78rem;margin-bottom:8px">Give → Want (bank: 4:1 or port ratio)</p>
+    ${RNAMES.map(r=>`<div class="trow">
+      <label>${REMOJI[r]}</label>
+      <input type="number" id="g-${r}" min="0" max="20" value="0"/>
+      <span style="color:var(--muted)">→</span>
+      <input type="number" id="w-${r}" min="0" max="20" value="0"/>
+    </div>`).join('')}
+    <div class="brow" style="margin-top:8px">
+      <button id="do-bank">Bank</button>
+      <button class="sec" id="do-player">Offer Players</button>
+    </div>`;
+  document.getElementById('do-bank').addEventListener('click',()=>{
+    const give={},want={};
+    RNAMES.forEach(r=>{ give[r]=+document.getElementById(`g-${r}`).value||0; want[r]=+document.getElementById(`w-${r}`).value||0; });
+    socket.emit('proposeTrade',{give,want,toBank:true});
+  });
+  document.getElementById('do-player').addEventListener('click',()=>{
+    const give={},want={};
+    RNAMES.forEach(r=>{ give[r]=+document.getElementById(`g-${r}`).value||0; want[r]=+document.getElementById(`w-${r}`).value||0; });
+    socket.emit('proposeTrade',{give,want,toBank:false});
+  });
+}
+
+function renderTradeModal(s){
+  const m=document.getElementById('m-trade');
+  if(!s.tradeOffer||s.tradeOffer.from===myId){ m.classList.remove('open'); return; }
+  const from=s.players.find(p=>p.id===s.tradeOffer.from);
+  const give=fmtRes(s.tradeOffer.give), want=fmtRes(s.tradeOffer.want);
+  document.getElementById('m-trade-body').textContent=`${from?.name} offers ${give} for your ${want}`;
+  m.classList.add('open');
+}
+document.getElementById('btn-accept').addEventListener('click',()=>{ socket.emit('acceptTrade'); closeModal('m-trade'); });
+document.getElementById('btn-decline').addEventListener('click',()=>{ socket.emit('cancelTrade'); closeModal('m-trade'); });
+function fmtRes(r){ return Object.entries(r).filter(([,n])=>n>0).map(([k,n])=>`${n}×${k}`).join(', ')||'nothing'; }
+
+// ── Dev card plays ─────────────────────────────────────────────────────────────
+function onPlayDev(card,s){
+  if(card==='knight'){ socket.emit('playDevCard',{card:'knight'}); return; }
+  if(card==='roadBuilding'){ socket.emit('playDevCard',{card:'roadBuilding'}); buildMode='road'; renderBoard(s); return; }
+  if(card==='yearOfPlenty'){
+    openDevModal('Year of Plenty','Choose 2 resources:',
+      `<div style="display:flex;gap:8px;margin-top:8px">
+        <select id="yop1">${resOpts()}</select>
+        <select id="yop2">${resOpts()}</select>
+      </div>`,
+      ()=>{socket.emit('playDevCard',{card:'yearOfPlenty',data:{r1:document.getElementById('yop1').value,r2:document.getElementById('yop2').value}});});
+    return;
+  }
+  if(card==='monopoly'){
+    openDevModal('Monopoly','Steal one resource from everyone:',
+      `<select id="mono" style="margin-top:8px">${resOpts()}</select>`,
+      ()=>{socket.emit('playDevCard',{card:'monopoly',data:{resource:document.getElementById('mono').value}});});
+    return;
+  }
+}
+function resOpts(){ return RNAMES.map(r=>`<option value="${r}">${r}</option>`).join(''); }
+function openDevModal(title,body,extra,onConfirm){
+  document.getElementById('m-dev-title').textContent=title;
+  document.getElementById('m-dev-body').innerHTML=`<p style="color:var(--muted);font-size:.85rem">${body}</p>${extra}`;
+  const btns=document.getElementById('m-dev-btns'); btns.innerHTML='';
+  const ok=document.createElement('button'); ok.textContent='Confirm';
+  ok.addEventListener('click',()=>{ onConfirm(); closeModal('m-dev'); });
+  const ca=document.createElement('button'); ca.className='sec'; ca.textContent='Cancel';
+  ca.addEventListener('click',()=>closeModal('m-dev'));
+  btns.appendChild(ok); btns.appendChild(ca);
+  openModal('m-dev');
+}
+
+// ── Action button events ──────────────────────────────────────────────────────
+document.getElementById('btn-roll').addEventListener('click',()=>{
+  ['die1','die2'].forEach(id=>{ document.getElementById(id).classList.add('rolling'); setTimeout(()=>document.getElementById(id).classList.remove('rolling'),450); });
+  socket.emit('rollDice');
+});
+document.getElementById('btn-end').addEventListener('click',()=>{ buildMode=null; socket.emit('endTurn'); });
+document.getElementById('btn-devbuy').addEventListener('click',()=>socket.emit('buyDevCard'));
+document.getElementById('b-settle').addEventListener('click',()=>{ buildMode='settlement'; if(G) renderBoard(G); });
+document.getElementById('b-road').addEventListener('click',()=>{ buildMode='road'; if(G) renderBoard(G); });
+document.getElementById('b-city').addEventListener('click',()=>{ buildMode='city'; if(G) renderBoard(G); });
+
+// ── Game over ─────────────────────────────────────────────────────────────────
+function showGameOver(s){
+  const sorted=[...s.players].sort((a,b)=>b.vp-a.vp);
+  document.getElementById('m-over-scores').innerHTML=sorted.map((p,i)=>`
+    <div class="srow${i===0?' w':''}">
+      <span>${i===0?'♛ ':''}<span style="font-family:'Cinzel',serif">${esc(p.name)}</span></span>
+      <span style="color:var(--gold);font-family:'Cinzel',serif">${p.vp} VP</span>
+    </div>`).join('');
+  openModal('m-over');
+}
+
+// ── Modal helpers ─────────────────────────────────────────────────────────────
+function openModal(id){ document.getElementById(id).classList.add('open'); }
+function closeModal(id){ document.getElementById(id).classList.remove('open'); }
+
+// ── SVG helpers ───────────────────────────────────────────────────────────────
+function se(tag){ return document.createElementNS('http://www.w3.org/2000/svg',tag); }
+function ap(id,el){ document.getElementById(id).appendChild(el); }
+function clear(id){ document.getElementById(id).innerHTML=''; }
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+</script>
+</body>
+</html>
