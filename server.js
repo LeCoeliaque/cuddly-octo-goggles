@@ -3,8 +3,8 @@ const http = require('http');
 const path = require('path');
 const { Server } = require('socket.io');
 const { registerHexlandsGame } = require('./hexlands');
-const { registerGolfGame } = require('./golf');
-const { registerImpostorGame } = require('./impostor');
+// const { registerGolfGame } = require('./golf');
+// const { registerImpostorGame } = require('./impostor');
 
 const app = express();
 
@@ -25,8 +25,6 @@ app.get('/hexlands', (req, res) => {
 });
 
 
-
-
 const server = http.createServer(app);
 
 const io = new Server(server, {
@@ -34,15 +32,15 @@ const io = new Server(server, {
     origin: '*',
     methods: ['GET', 'POST'],
   },
-  transports: ['websocket', 'polling'],
+  transports: ['polling'],
   pingTimeout: 60000,
   pingInterval: 25000,
 });
 
 // ─── Mount game namespaces ────────────────────────────────────────────────────
 registerHexlandsGame(io.of('/hexlands'));
-registerGolfGame(io.of('/golf'));
-registerImpostorGame(io.of('/impostor'));
+// registerGolfGame(io.of('/golf'));
+// registerImpostorGame(io.of('/impostor'));
 
 // ─── Health check ─────────────────────────────────────────────────────────────
 app.get('/', (req, res) => res.json({ status: 'ok', games: ['hexlands'] }));
