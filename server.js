@@ -1,31 +1,34 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const cors = require('cors');
 const { registerHexlandsGame } = require('./hexlands');
 const { registerGolfGame } = require('./golf');
 const { registerImpostorGame } = require('./impostor');
 
 const app = express();
 
-// ─── CORS ─────────────────────────────────────────────────────────────────────
-// Must allow ANY origin including file:// (which sends origin: null).
-// This is safe for a private game server.
-const allowAnyOrigin = (origin, callback) => callback(null, true);
-
-app.use(cors({ origin: allowAnyOrigin, methods: ['GET','POST','OPTIONS'], credentials: true }));
-app.options('*', cors({ origin: allowAnyOrigin }));
+// ─── CORS middleware — runs on EVERY response including errors ────────────────
+// Must be the very first middleware so even 503/404 responses get the header.
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  if (req.method === 'OPTIONS') { res.sendStatus(204); return; }
+  next();
+});
 
 const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: allowAnyOrigin,
-    methods: ['GET','POST'],
+    origin: (origin, cb) => cb(null, true),
+    methods: ['GET', 'POST'],
     credentials: true,
   },
-  // Support both transports — polling works when WebSocket is blocked
-  transports: ['polling', 'websocket'],
+  transports: ['websocket', 'polling'],
+  pingTimeout: 60000,
+  pingInterval: 25000,
 });
 
 // ─── Mount Games ──────────────────────────────────────────────────────────────
